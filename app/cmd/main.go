@@ -2,57 +2,71 @@ package main
 
 import (
 	"fmt"
-	"github.com/gorilla/websocket"
+	"golang.org/x/net/websocket"
+	"io"
 	"net/http"
+	"time"
 )
 
-// INITIALIZE
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+type Server struct {
+	conns map[*websocket.Conn]bool
 }
 
-// CREATE VARIABLE WEBSOCKET
+func NewServer() *Server {
+	return &Server{
+		conns: make(map[*websocket.Conn]bool),
+	}
+}
 
-var clients []websocket.Conn
+func (s *Server) handleWSOrderbook(ws *websocket.Conn) {
+	fmt.Println("new incoming connection from client to erderbook feed:", ws.RemoteAddr())
+
+	for {
+		payload := fmt.Sprintf("orderbook data -> %d\n", time.Now().UnixNano())
+		ws.Write([]byte(payload))
+		time.Sleep(time.Second * 2)
+	}
+}
+
+func (s *Server) handleWS(ws *websocket.Conn) {
+	fmt.Println("new incoming connection from client:", ws.RemoteAddr())
+
+	s.conns[ws] = true
+
+	s.readLoop(ws)
+}
+
+func (s *Server) readLoop(ws *websocket.Conn) {
+	buf := make([]byte, 1024)
+	for {
+		n, err := ws.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			fmt.Println("read error:", err)
+			continue
+		}
+		msg := buf[:n]
+
+		s.broadcast(msg)
+	}
+
+}
+
+func (s *Server) broadcast(b []byte) {
+	for ws := range s.conns {
+		go func(ws *websocket.Conn) {
+			if _, err := ws.Write(b); err != nil {
+				fmt.Println("Write error:", err)
+			}
+		}(ws)
+	}
+}
 
 func main() {
-	// CREATE ENDPOIND FOR CONNECT WEBSOKCET
-	http.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
-		// INITIALIZE CONFIG
-		conn, _ := upgrader.Upgrade(w, r, nil)
-
-		clients = append(clients, *conn)
-
-		// LOOP IF CLIENT SEND TO SERVER
-		for {
-			// READ MESSAGE FROM BROWSER
-			msgType, msg, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-
-			// PRINT MESSAGE IN YOU CONSOLE TERMINAL
-			fmt.Printf("%s send: %s\n", conn.RemoteAddr(), string(msg))
-
-			// LOOP IF MESSAGE FOUND AND SEND AGAIN TO CLIENT FOR
-			// WRITE IN YOU BROWSER
-			for _, client := range clients {
-				if err = client.WriteMessage(msgType, msg); err != nil {
-					return
-				}
-			}
-
-		}
-
-	})
-	// SEND YOU HTML FILE FOR OPEN TO BROWSER
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
-		// w,r IS WRITE AND DELETE YOU INDEX.HTML
-
-	})
-	println("You server run 8080")
-	http.ListenAndServe(":8080", nil)
-
+	server := NewServer()
+	http.Handle("/ws", websocket.Handler(server.handleWS))
+	http.Handle("/orderbookfeed", websocket.Handler(server.handleWSOrderbook))
+	http.ListenAndServe(":3000", nil)
 }
